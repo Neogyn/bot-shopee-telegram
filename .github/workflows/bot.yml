@@ -1,0 +1,54 @@
+name: Bot Shopee Telegram
+
+on:
+  schedule:
+    # Horários em UTC (Brasília UTC-3)
+    # 09:00 Brasília = 12:00 UTC
+    # 10:00 Brasília = 13:00 UTC
+    # 11:00 Brasília = 14:00 UTC
+    # 12:00 Brasília = 15:00 UTC
+    # 13:00 Brasília = 16:00 UTC
+    # 14:41 Brasília = 17:41 UTC
+    # 15:00 Brasília = 18:00 UTC
+    # 16:57 Brasília = 19:57 UTC
+    # 17:13 Brasília = 20:13 UTC
+    # 18:00 Brasília = 21:00 UTC
+    # 19:00 Brasília = 22:00 UTC
+    # 20:00 Brasília = 23:00 UTC
+    # 21:00 Brasília = 00:00 UTC
+    # 22:00 Brasília = 01:00 UTC
+    # 23:00 Brasília = 02:00 UTC
+    # 01:59 Brasília = 04:59 UTC
+    - cron: '0 12,13,14,15,16,17,41,18,57,13,0,1,2,59 * * *'
+  
+  # Permite executar manualmente pela aba Actions
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Baixar código do repositório
+        uses: actions/checkout@v4
+      
+      - name: 🐍 Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      
+      - name: 📦 Instalar dependências
+        run: |
+          cd bot
+          pip install -r requirements.txt
+      
+      - name: 🚀 Executar bot
+        run: |
+          cd bot
+          python bot_shopee_telegram.py
+        env:
+          SHOPEE_APP_ID: ${{ secrets.SHOPEE_APP_ID }}
+          SHOPEE_SECRET: ${{ secrets.SHOPEE_SECRET }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
