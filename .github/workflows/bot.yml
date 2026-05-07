@@ -37,7 +37,7 @@ jobs:
         run: pip install -r requirements.txt
       
       - name: 🚀 Executar bot
-        run: python bot_shopee_telegram.py
+        run:  python bot_shopee_telegram.py --now
         env:
           SHOPEE_APP_ID: ${{ secrets.SHOPEE_APP_ID }}
           SHOPEE_SECRET: ${{ secrets.SHOPEE_SECRET }}
