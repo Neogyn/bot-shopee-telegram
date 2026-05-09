@@ -1,343 +1,246 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Bot Shopee Telegram - Automatização de Ofertas Diárias
-Script para buscar ofertas da Shopee e enviar mensagens personalizadas para o Telegram
+Bot Shopee Telegram - Versão Otimizada
+- Busca produtos novos a cada execução
+- Limite configurável (6 produtos)
+- Prompt criativo e variado do Google Gemini
+- Rodízio de categorias para diversidade
 """
 
 import requests
 import json
 import hashlib
 import time
-import schedule
 import logging
-from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+from datetime import datetime
 import os
+import random
 from dotenv import load_dotenv
-from configuracao_horarios import obter_horarios, obter_configuracoes, mostrar_horarios
-import csv
-import sys
 
-# Carregar variáveis de ambiente
 load_dotenv()
 
-# Configuração de logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('bot_shopee_telegram.log', encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+# Configuração
+MAX_PRODUCTS = 6               # ← Altere aqui se quiser mais ou menos
+CATEGORIAS = [
+    "smartphone", "fone de ouvido", "notebook", "cadeira gamer",
+    "teclado mecanico", "mouse gamer", "monitor", "placa de video",
+    "processador", "ssd", "memoria ram", "fonte de alimentacao",
+    "gabinete", "cooler", "webcam", "microfone", "caixa de som",
+    "robo aspirador", "fritadeira eletrica", "liquidificador",
+    "ventilador", "ar condicionado", "geladeira", "maquina de lavar",
+    "smartwatch", "tablet", "kindle", "impressora", "roteador"
+]
 
-class Configuracao:
-    """Classe para gerenciar todas as configurações do bot"""
-    
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+class BotShopee:
     def __init__(self):
-        self.shopee_app_id = os.getenv('SHOPEE_APP_ID')
-        self.shopee_secret = os.getenv('SHOPEE_SECRET')
-        self.shopee_api_url = "https://open-api.affiliate.shopee.com.br/graphql"
-        
-        # CORRIGIDO: Modelo Gemini 2.5 mais estável
+        self.app_id = os.getenv('SHOPEE_APP_ID')
+        self.secret = os.getenv('SHOPEE_SECRET')
+        self.api_url = "https://open-api.affiliate.shopee.com.br/graphql"
         self.google_api_key = os.getenv('GOOGLE_API_KEY')
-        self.google_api_url = "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent"
-        
-        self.telegram_bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
-        self.telegram_channel_id = os.getenv('TELEGRAM_CHANNEL_ID')
-        self.telegram_api_url = f"https://api.telegram.org/bot{self.telegram_bot_token}"
-        
-        self.limite_ofertas_por_execucao = int(os.getenv('LIMITE_OFERTAS', '5'))  # REDUZIDO para evitar 429
-        self.intervalo_entre_mensagens = int(os.getenv('INTERVALO_MENSAGENS', '8'))  # AUMENTADO para evitar 429
-        
-        self._validar_configuracoes()
-    
-    def _validar_configuracoes(self):
-        configuracoes_obrigatorias = {
-            'SHOPEE_APP_ID': self.shopee_app_id,
-            'SHOPEE_SECRET': self.shopee_secret,
-            'GOOGLE_API_KEY': self.google_api_key,
-            'TELEGRAM_BOT_TOKEN': self.telegram_bot_token,
-            'TELEGRAM_CHANNEL_ID': self.telegram_channel_id
-        }
-        for nome, valor in configuracoes_obrigatorias.items():
-            if not valor:
-                raise ValueError(f"Configuração obrigatória não encontrada: {nome}")
+        self.telegram_token = os.getenv('TELEGRAM_BOT_TOKEN')
+        self.telegram_channel = os.getenv('TELEGRAM_CHANNEL_ID')
+        self.session_file = "products_sent_today.json"
+        self.load_sent_products()
 
-class APIShopee:
-    def __init__(self, configuracao: Configuracao):
-        self.config = configuracao
-    
-    def _gerar_assinatura(self, timestamp: int, payload: str) -> str:
-        credencial = self.config.shopee_app_id
-        secret = self.config.shopee_secret
-        string_para_assinatura = f"{credencial}{timestamp}{payload}{secret}"
-        return hashlib.sha256(string_para_assinatura.encode('utf-8')).hexdigest()
-    
-    def _fazer_requisicao(self, query: str) -> Dict:
+    def load_sent_products(self):
+        today = datetime.now().strftime("%Y-%m-%d")
+        if os.path.exists(self.session_file):
+            with open(self.session_file, 'r') as f:
+                data = json.load(f)
+                if data.get('date') == today:
+                    self.sent_ids = set(data.get('ids', []))
+                else:
+                    self.sent_ids = set()
+        else:
+            self.sent_ids = set()
+
+    def save_sent_products(self):
+        with open(self.session_file, 'w') as f:
+            json.dump({'date': datetime.now().strftime("%Y-%m-%d"), 'ids': list(self.sent_ids)}, f)
+
+    def mark_sent(self, product_id):
+        self.sent_ids.add(str(product_id))
+        self.save_sent_products()
+
+    def generate_signature(self, timestamp, payload):
+        sign_str = f"{self.app_id}{timestamp}{payload}{self.secret}"
+        return hashlib.sha256(sign_str.encode()).hexdigest()
+
+    def fetch_products(self, keyword, limit=20):
+        query = f'''
+        {{
+          productOfferV2(keyword: "{keyword}", sortType: 2, page: 1, limit: {limit}) {{
+            nodes {{
+              itemId, productName, sales, priceMin, priceMax, imageUrl, offerLink, commissionRate, ratingStar
+            }}
+          }}
+        }}
+        '''
         timestamp = int(time.time())
         payload = json.dumps({"query": query})
-        assinatura = self._gerar_assinatura(timestamp, payload)
-        
+        signature = self.generate_signature(timestamp, payload)
         headers = {
-            'Authorization': f'SHA256 Credential={self.config.shopee_app_id}, Timestamp={timestamp}, Signature={assinatura}',
+            'Authorization': f'SHA256 Credential={self.app_id}, Timestamp={timestamp}, Signature={signature}',
             'Content-Type': 'application/json'
         }
-        
         try:
-            resposta = requests.post(self.config.shopee_api_url, headers=headers, data=payload, timeout=30)
-            resposta.raise_for_status()
-            return resposta.json()
+            resp = requests.post(self.api_url, headers=headers, data=payload, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            if 'errors' in data:
+                logging.error(f"Erro API Shopee: {data['errors']}")
+                return []
+            products = data.get('data', {}).get('productOfferV2', {}).get('nodes', [])
+            # Ordenar por vendas (melhores)
+            products.sort(key=lambda x: int(x.get('sales', 0)), reverse=True)
+            return products[:MAX_PRODUCTS]
         except Exception as e:
-            logging.error(f"Erro na API Shopee: {e}")
-            return {"errors": [{"message": str(e)}]}
+            logging.error(f"Erro ao buscar {keyword}: {e}")
+            return []
 
-class GoogleAI:
-    def __init__(self, configuracao: Configuracao):
-        self.config = configuracao
-    
-    def gerar_mensagem_personalizada(self, nome_produto: str) -> str:
+    def get_creative_prompt(self, product_name):
+        # Varia o tom com base no horário para evitar repetição
+        hour = datetime.now().hour
+        tones = [
+            "engajado, com muitas perguntas retóricas",
+            "descontraído, usando gírias e abreviações (vc, pra, corrê)",
+            "urgente, com emojis chamativos (🚨, 💥, 🤯)",
+            "humorístico, com comparações exageradas (ex: a Ferrari dos fones)",
+            "curto e direto, sem enrolação",
+            "entusiasta, com exclamações e elogios"
+        ]
+        selected_tone = tones[hour % len(tones)]
+
         prompt = f"""
-        Gere uma mensagem para um post promocional para o produto "{nome_produto}".
-        Use português brasileiro informal, com emojis chamativos (ex: 🚨, 💥, 🤯).
-        Máximo 3 linhas. Não inclua preços ou links.
+        Gere uma mensagem promocional para o produto "{product_name}" com as seguintes características:
+        - Tom: {selected_tone}
+        - Máximo 3 linhas.
+        - Use emojis variados (não repetir sempre os mesmos).
+        - Fale apenas do produto, sem preços ou links.
+        - Seja irresistível, como se fosse uma dica de amigo.
+        Retorne apenas a mensagem final.
         """
-        try:
-            url = f"{self.config.google_api_url}?key={self.config.google_api_key}"
-            dados = {"contents": [{"parts": [{"text": prompt}]}]}
-            resposta = requests.post(url, json=dados, timeout=30)
-            resposta.raise_for_status()
-            resultado = resposta.json()
-            return resultado['candidates'][0]['content']['parts'][0]['text'].strip()
-        except Exception as e:
-            logging.error(f"Erro Google AI: {e}")
-            return f"🔥 OFERTA IMPERDÍVEL! {nome_produto} com preço incrível! 🎉"
+        return prompt
 
-class TelegramBot:
-    def __init__(self, configuracao: Configuracao):
-        self.config = configuracao
-    
-    # MELHORIA PRINCIPAL: Baixa a imagem localmente antes de enviar
-    def enviar_mensagem(self, texto: str, imagem_url: Optional[str] = None) -> bool:
+    def generate_message_gemini(self, product_name):
         try:
-            if imagem_url:
-                try:
-                    # Baixa a imagem com User-Agent para evitar bloqueios
-                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-                    response_img = requests.get(imagem_url, headers=headers, timeout=15)
-                    response_img.raise_for_status()
-                    
-                    # Envia como arquivo local
-                    files = {'photo': ('image.jpg', response_img.content, 'image/jpeg')}
-                    dados = {'chat_id': self.config.telegram_channel_id, 'caption': texto, 'parse_mode': 'HTML'}
-                    resposta = requests.post(f"{self.config.telegram_api_url}/sendPhoto", data=dados, files=files, timeout=30)
-                    resposta.raise_for_status()
-                    logging.info("✅ Mensagem com imagem enviada")
-                    return True
-                except Exception as e_img:
-                    logging.warning(f"Não foi possível enviar imagem ({e_img}). Enviando apenas texto...")
-                    return self.enviar_mensagem(texto, imagem_url=None)
+            url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={self.google_api_key}"
+            prompt = self.get_creative_prompt(product_name)
+            data = {"contents": [{"parts": [{"text": prompt}]}]}
+            resp = requests.post(url, json=data, timeout=30)
+            if resp.status_code == 200:
+                result = resp.json()
+                return result['candidates'][0]['content']['parts'][0]['text'].strip()
             else:
-                # Fallback: apenas texto
-                dados = {'chat_id': self.config.telegram_channel_id, 'text': texto, 'parse_mode': 'HTML'}
-                resposta = requests.post(f"{self.config.telegram_api_url}/sendMessage", json=dados, timeout=30)
-                resposta.raise_for_status()
-                logging.info("✅ Mensagem de texto enviada")
-                return True
+                logging.error(f"Gemini erro {resp.status_code}: {resp.text}")
+                return f"🔥 Oferta relâmpago! {product_name} com preço incrível! Corre! 🛒"
         except Exception as e:
-            logging.error(f"Erro no envio: {e}")
+            logging.error(f"Erro Gemini: {e}")
+            return f"⚡ Super desconto! {product_name} – não perca!"
+
+    def send_telegram(self, text, image_url=None):
+        try:
+            if image_url:
+                # Baixa imagem e envia como foto
+                img_data = requests.get(image_url, timeout=15).content
+                files = {'photo': ('img.jpg', img_data)}
+                data = {'chat_id': self.telegram_channel, 'caption': text, 'parse_mode': 'HTML'}
+                url = f"https://api.telegram.org/bot{self.telegram_token}/sendPhoto"
+                resp = requests.post(url, data=data, files=files, timeout=30)
+            else:
+                data = {'chat_id': self.telegram_channel, 'text': text, 'parse_mode': 'HTML'}
+                url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
+                resp = requests.post(url, json=data, timeout=30)
+            resp.raise_for_status()
+            logging.info("✅ Mensagem enviada ao Telegram")
+            return True
+        except Exception as e:
+            logging.error(f"Erro Telegram: {e}")
             return False
 
-    def formatar_mensagem_oferta(self, produto: Dict, mensagem_personalizada: str) -> str:
-        nome_produto = produto.get('productName', 'Produto')
-        comissao = float(produto.get('commissionRate', '0')) * 100
-        link_afiliado = produto.get('offerLink', '')
-        
-        # CORREÇÃO: Tratamento seguro de preços
-        try:
-            preco_min = str(produto.get('priceMin', '0')).replace(',', '.')
-            preco_max = str(produto.get('priceMax', '0')).replace(',', '.')
-            preco_min = float(preco_min) if preco_min and preco_min != 'None' else 0
-            preco_max = float(preco_max) if preco_max and preco_max != 'None' else 0
-        except:
-            preco_min, preco_max = 0, 0
-        
-        # CORREÇÃO: Conversão segura de vendas
-        vendas_raw = produto.get('sales', 0)
-        try:
-            vendas_num = int(vendas_raw) if str(vendas_raw).isdigit() else 0
-        except:
-            vendas_num = 0
-        
-        # CORREÇÃO: Conversão segura de avaliação
-        avaliacao_raw = produto.get('ratingStar', '0')
-        try:
-            avaliacao_num = float(avaliacao_raw) if str(avaliacao_raw).replace('.', '').isdigit() else 0
-        except:
-            avaliacao_num = 0
-        
-        # Cálculo de desconto e preços
-        desconto_percentual = min(int(comissao * 3), 80)
-        if preco_min > 0 and preco_max > 0 and preco_max > preco_min:
-            preco_original = preco_max
-            preco_descontado = preco_min
-            desconto_real = int(((preco_original - preco_descontado) / preco_original) * 100)
-            desconto_percentual = max(desconto_real, desconto_percentual)
+    def format_caption(self, product, ai_text):
+        name = product.get('productName', 'Produto')
+        price_min = float(product.get('priceMin', 0)) or 0
+        price_max = float(product.get('priceMax', 0)) or 0
+        discount = 0
+        if price_max > price_min:
+            discount = int(((price_max - price_min) / price_max) * 100)
         else:
-            preco_original = round(100 + (comissao * 10), 2)
-            preco_descontado = round(preco_original * (1 - desconto_percentual/100), 2)
-        
-        # Info de vendas e avaliação
-        info_produto = ""
-        if vendas_num > 0:
-            info_produto += f"📦 {vendas_num} vendidos"
-        if avaliacao_num > 0:
-            info_produto += f" | ⭐ {avaliacao_num:.1f}" if info_produto else f"⭐ {avaliacao_num:.1f}"
-        
-        emoji = ['😱', '🎉', '💥', '⚡', '🔥', '💎', '🎯', '🏆'][int(time.time()) % 8]
-        
-        return f"""
-{mensagem_personalizada}
+            discount = random.randint(15, 60)
+        final_price = price_min if price_min > 0 else round(price_max * (1 - discount/100), 2)
+        original_price = price_max if price_max > 0 else round(final_price * 100 / (100 - discount), 2)
 
-<b>{nome_produto}</b>
+        link = product.get('offerLink', '')
+        sales = int(product.get('sales', 0))
+        stars = float(product.get('ratingStar', 0))
 
-{emoji} <b>{desconto_percentual}% DE DESCONTO!!</b>
+        info = ""
+        if sales > 0:
+            info += f"📦 {sales} vendidos"
+        if stars > 0:
+            info += f" | ⭐ {stars:.1f}" if info else f"⭐ {stars:.1f}"
 
-De R$ ~{preco_original:.2f}~
-Por R$ <b>*{preco_descontado:.2f}*</b> 🤑
+        emojis = ["🔥", "🎉", "⚡", "💥", "🚀", "🏆", "💎", "😱"]
+        emoji = random.choice(emojis)
 
-{info_produto}
+        caption = f"""
+{ai_text}
+
+<b>{name}</b>
+
+{emoji} <b>{discount}% DE DESCONTO!</b>
+
+De R$ ~{original_price:.2f}~
+Por R$ <b>*{final_price:.2f}*</b> 🤑
+
+{info}
 
 Compre aqui 🛍️👇
-{link_afiliado}
+{link}
         """.strip()
+        return caption
 
-class BotShopeeTelegram:
-    def __init__(self):
-        self.config = Configuracao()
-        self.api_shopee = APIShopee(self.config)
-        self.google_ai = GoogleAI(self.config)
-        self.telegram = TelegramBot(self.config)
-        self.session = SessionBot()
-        self.horarios = []
-    
-    def definir_horarios(self, horarios):
-        self.horarios = sorted(horarios)
-    
-    def processar_ofertas(self):
-        logging.info("=== EXECUÇÃO INICIADA ===")
-        try:
-            # Busca ou carrega produtos
-            keywords = ["Beleza", "Moda", "Eletrônicos", "Casa", "Esportes", "Brinquedos", "Pet", "Livros"]
-            produtos = obter_top_produtos_por_keywords(
-                self.config.shopee_app_id, self.config.shopee_secret, 
-                self.config.shopee_api_url, keywords, limit=15, top_n=2
-            )
-            
-            if not produtos:
-                logging.warning("Nenhum produto encontrado")
-                return
-            
-            # Filtra não enviados e limita
-            novos = [p for p in produtos if not self.session.produto_ja_enviado(p.get('itemId'))]
-            novos = novos[:self.config.limite_ofertas_por_execucao]
-            logging.info(f"Processando {len(novos)} novos produtos")
-            
-            for i, prod in enumerate(novos, 1):
-                try:
-                    nome = prod.get('productName', 'Produto')
-                    msg_ia = self.google_ai.gerar_mensagem_personalizada(nome)
-                    msg_final = self.telegram.formatar_mensagem_oferta(prod, msg_ia)
-                    imagem = prod.get('imageUrl')
-                    
-                    if self.telegram.enviar_mensagem(msg_final, imagem):
-                        self.session.marcar_produto_enviado(prod.get('itemId'))
-                        logging.info(f"✅ Produto {i}/{len(novos)} enviado")
-                    else:
-                        logging.error(f"❌ Falha no produto {i}")
-                    
-                    time.sleep(self.config.intervalo_entre_mensagens)  # Aguarda para evitar 429
-                except Exception as e:
-                    logging.error(f"Erro no produto {i}: {e}")
-                    continue
-                    
-        except Exception as e:
-            logging.error(f"Erro geral: {e}")
-        logging.info("=== EXECUÇÃO CONCLUÍDA ===")
-    
-    def executar_diariamente(self):
-        self.processar_ofertas()
+    def run(self):
+        logging.info("🚀 Buscando produtos novos...")
+        # Escolhe uma categoria aleatória diferente a cada execução (rodízio)
+        idx = int(time.time()) % len(CATEGORIAS)
+        keyword = CATEGORIAS[idx]
+        logging.info(f"Categoria selecionada: {keyword}")
 
-class SessionBot:
-    def __init__(self, arquivo='session_bot.json'):
-        self.arquivo = arquivo
-        self.enviados = self._carregar()
-    
-    def _carregar(self):
-        try:
-            if os.path.exists(self.arquivo):
-                with open(self.arquivo, 'r') as f:
-                    return set(json.load(f).get('produtos', []))
-        except:
-            pass
-        return set()
-    
-    def _salvar(self):
-        with open(self.arquivo, 'w') as f:
-            json.dump({'produtos': list(self.enviados), 'atualizado': datetime.now().isoformat()}, f)
-    
-    def produto_ja_enviado(self, item_id):
-        return str(item_id) in self.enviados
-    
-    def marcar_produto_enviado(self, item_id):
-        self.enviados.add(str(item_id))
-        self._salvar()
-
-def obter_top_produtos_por_keywords(app_id, secret, api_url, keywords, limit=20, top_n=2):
-    todos = {}
-    for kw in keywords:
-        query = f'{{ productOfferV2(keyword: "{kw}", sortType: 2, limit: {limit}) {{ nodes {{ itemId productName sales priceMin priceMax imageUrl offerLink commissionRate ratingStar }} }} }}'
-        payload = json.dumps({"query": query})
-        timestamp = int(time.time())
-        assinatura = hashlib.sha256(f"{app_id}{timestamp}{payload}{secret}".encode()).hexdigest()
-        headers = {'Authorization': f'SHA256 Credential={app_id}, Timestamp={timestamp}, Signature={assinatura}', 'Content-Type': 'application/json'}
-        try:
-            resp = requests.post(api_url, headers=headers, data=payload, timeout=30).json()
-            produtos = resp.get('data', {}).get('productOfferV2', {}).get('nodes', [])
-            # Ordena por vendas
-            for p in sorted(produtos, key=lambda x: int(x.get('sales',0)), reverse=True)[:top_n]:
-                todos[p['itemId']] = p
-            time.sleep(1.5)  # Evita 429
-        except Exception as e:
-            logging.error(f"Erro na keyword {kw}: {e}")
-    return list(todos.values())
-
-def main():
-    try:
-        bot = BotShopeeTelegram()
-        horarios = obter_horarios()
-        bot.definir_horarios(horarios)
-        mostrar_horarios()
-        
-        # Suporte ao comando --now
-        if len(sys.argv) > 1 and sys.argv[1] == '--now':
-            logging.info("🕐 EXECUÇÃO FORÇADA (ignorando horários)")
-            bot.executar_diariamente()
+        products = self.fetch_products(keyword)
+        if not products:
+            logging.warning("Nenhum produto encontrado.")
             return
-        
-        # Agendamento normal
-        for horario in horarios:
-            schedule.every().day.at(horario).do(bot.executar_diariamente)
-        
-        logging.info(f"Bot agendado. Próxima execução: {horarios[0] if horarios else 'N/A'}")
-        while True:
-            schedule.run_pending()
-            time.sleep(60)
-    except KeyboardInterrupt:
-        logging.info("Bot interrompido")
-    except Exception as e:
-        logging.error(f"Erro fatal: {e}")
+
+        # Filtra os que já foram enviados hoje
+        new_products = [p for p in products if str(p.get('itemId')) not in self.sent_ids]
+        logging.info(f"Produtos novos: {len(new_products)} de {len(products)}")
+
+        if not new_products:
+            logging.info("Todos os produtos já foram enviados hoje. Execução encerrada.")
+            return
+
+        # Limita ao máximo configurado
+        to_send = new_products[:MAX_PRODUCTS]
+        for i, prod in enumerate(to_send, 1):
+            try:
+                prod_id = prod['itemId']
+                name = prod['productName']
+                logging.info(f"Processando {i}/{len(to_send)}: {name[:40]}...")
+                ai_msg = self.generate_message_gemini(name)
+                caption = self.format_caption(prod, ai_msg)
+                image = prod.get('imageUrl')
+                if self.send_telegram(caption, image):
+                    self.mark_sent(prod_id)
+                else:
+                    logging.error(f"Falha ao enviar produto {i}")
+                time.sleep(8)  # Evita 429
+            except Exception as e:
+                logging.error(f"Erro no produto {i}: {e}")
 
 if __name__ == "__main__":
-    main()
+    bot = BotShopee()
+    bot.run()
