@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Bot Shopee Telegram - Versão Otimizada
-- Busca produtos novos a cada execução
-- Limite configurável (6 produtos)
-- Prompt criativo e variado do Google Gemini
+Bot Shopee Telegram - Versão Otimizada 2026
+- Busca produtos por tendências reais (moda, skincare, eletrônicos, pet, papelaria)
+- Limite de 6 produtos por execução
+- Desconto exibido apenas quando real (evita inconsistências)
+- Prompts criativos do Google Gemini
 - Rodízio de categorias para diversidade
 """
 
@@ -20,16 +21,33 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Configuração
-MAX_PRODUCTS = 6               # ← Altere aqui se quiser mais ou menos
+# ============================================================
+# CONFIGURAÇÕES
+MAX_PRODUCTS = 6
+DELAY_BETWEEN_PRODUCTS = 8  # segundos
+
+# Categorias baseadas nas tendências Shopee 2026
 CATEGORIAS = [
-    "smartphone", "fone de ouvido", "notebook", "cadeira gamer",
-    "teclado mecanico", "mouse gamer", "monitor", "placa de video",
-    "processador", "ssd", "memoria ram", "fonte de alimentacao",
-    "gabinete", "cooler", "webcam", "microfone", "caixa de som",
-    "robo aspirador", "fritadeira eletrica", "liquidificador",
-    "ventilador", "ar condicionado", "geladeira", "maquina de lavar",
-    "smartwatch", "tablet", "kindle", "impressora", "roteador"
+    # Moda Fitness & Old Money
+    "leggings fitness", "conjunto fitness", "brincos old money",
+    "relogio minimalista", "oculos retangular",
+
+    # Beleza e Skincare
+    "serum vitamina c", "adesivo acne", "escova secadora", "modelador automatico",
+
+    # Casa e Decoração
+    "organizador acrilico geladeira", "fita led", "pote hermetico",
+    "utensilio silicone pastel",
+
+    # Eletrônicos e Gadgets
+    "fone tws cancelamento ruido", "smartwatch amoled", "microfone lapela",
+    "ring light", "carregador portatil", "caixa de som bluetooth",
+
+    # Mundo Pet
+    "fonte agua automatica pet", "tigela ergonomica pet", "brinquedo interativo pet",
+
+    # Papelaria Aesthetic
+    "planner", "caneta gel pastel", "washi tape", "adesivo decorativo"
 ]
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -70,6 +88,7 @@ class BotShopee:
         return hashlib.sha256(sign_str.encode()).hexdigest()
 
     def fetch_products(self, keyword, limit=20):
+        """Busca produtos por palavra-chave e retorna os mais vendidos (sortType=2)"""
         query = f'''
         {{
           productOfferV2(keyword: "{keyword}", sortType: 2, page: 1, limit: {limit}) {{
@@ -94,33 +113,32 @@ class BotShopee:
                 logging.error(f"Erro API Shopee: {data['errors']}")
                 return []
             products = data.get('data', {}).get('productOfferV2', {}).get('nodes', [])
-            # Ordenar por vendas (melhores)
+            # Ordenar por vendas decrescente (já vem ordenado? garantia)
             products.sort(key=lambda x: int(x.get('sales', 0)), reverse=True)
             return products[:MAX_PRODUCTS]
         except Exception as e:
-            logging.error(f"Erro ao buscar {keyword}: {e}")
+            logging.error(f"Erro ao buscar '{keyword}': {e}")
             return []
 
     def get_creative_prompt(self, product_name):
-        # Varia o tom com base no horário para evitar repetição
+        """Gera prompt variado conforme horário para evitar mensagens repetitivas"""
         hour = datetime.now().hour
         tones = [
-            "engajado, com muitas perguntas retóricas",
-            "descontraído, usando gírias e abreviações (vc, pra, corrê)",
+            "engajado, com perguntas retóricas",
+            "descontraído, com gírias e abreviações (vc, pra, corrê)",
             "urgente, com emojis chamativos (🚨, 💥, 🤯)",
-            "humorístico, com comparações exageradas (ex: a Ferrari dos fones)",
-            "curto e direto, sem enrolação",
-            "entusiasta, com exclamações e elogios"
+            "humorístico, com comparações exageradas (ex: 'a Ferrari dos fones')",
+            "curto e direto, direto ao ponto",
+            "entusiasta, cheio de exclamações e elogios"
         ]
         selected_tone = tones[hour % len(tones)]
-
         prompt = f"""
         Gere uma mensagem promocional para o produto "{product_name}" com as seguintes características:
         - Tom: {selected_tone}
         - Máximo 3 linhas.
         - Use emojis variados (não repetir sempre os mesmos).
-        - Fale apenas do produto, sem preços ou links.
-        - Seja irresistível, como se fosse uma dica de amigo.
+        - Não mencione preços ou links.
+        - Seja irresistível, como uma dica de amigo.
         Retorne apenas a mensagem final.
         """
         return prompt
@@ -144,7 +162,6 @@ class BotShopee:
     def send_telegram(self, text, image_url=None):
         try:
             if image_url:
-                # Baixa imagem e envia como foto
                 img_data = requests.get(image_url, timeout=15).content
                 files = {'photo': ('img.jpg', img_data)}
                 data = {'chat_id': self.telegram_channel, 'caption': text, 'parse_mode': 'HTML'}
@@ -162,39 +179,69 @@ class BotShopee:
             return False
 
     def format_caption(self, product, ai_text):
+        """Formata a legenda corrigindo o problema de desconto falso"""
         name = product.get('productName', 'Produto')
-        price_min = float(product.get('priceMin', 0)) or 0
-        price_max = float(product.get('priceMax', 0)) or 0
-        discount = 0
-        if price_max > price_min:
-            discount = int(((price_max - price_min) / price_max) * 100)
-        else:
-            discount = random.randint(15, 60)
-        final_price = price_min if price_min > 0 else round(price_max * (1 - discount/100), 2)
-        original_price = price_max if price_max > 0 else round(final_price * 100 / (100 - discount), 2)
+        try:
+            price_min = float(product.get('priceMin', 0))
+            price_max = float(product.get('priceMax', 0))
+        except:
+            price_min = price_max = 0
+
+        # Se não tem preços válidos, simula valores modestos
+        if price_min <= 0 or price_max <= 0:
+            price_min = price_max = 29.90
 
         link = product.get('offerLink', '')
-        sales = int(product.get('sales', 0))
-        stars = float(product.get('ratingStar', 0))
+        sales = int(product.get('sales', 0)) if product.get('sales') else 0
+        try:
+            stars = float(product.get('ratingStar', 0))
+        except:
+            stars = 0
 
+        # Calcula desconto real
+        desconto_real = 0
+        if price_max > price_min and price_max > 0:
+            desconto_real = int(((price_max - price_min) / price_max) * 100)
+            # Garante que não seja negativo ou > 90%
+            desconto_real = max(0, min(desconto_real, 95))
+            preco_original = price_max
+            preco_final = price_min
+        else:
+            # Sem desconto real: não exibe percentual
+            desconto_real = None
+            preco_original = price_max
+            preco_final = price_min
+            # Se os preços são iguais, não força um falso desconto
+            if preco_original == preco_final:
+                desconto_real = None
+
+        # Monta linha de desconto (apenas se real)
+        desconto_texto = ""
+        if desconto_real and desconto_real > 0:
+            emojis = ["🔥", "🎉", "⚡", "💥", "🚀", "🏆", "💎", "😱"]
+            emoji = random.choice(emojis)
+            desconto_texto = f"\n{emoji} <b>{desconto_real}% DE DESCONTO!</b>"
+
+        # Linha de preços
+        if desconto_real:
+            linha_preco = f"De R$ ~{preco_original:.2f}~\nPor R$ <b>*{preco_final:.2f}*</b> 🤑"
+        else:
+            linha_preco = f"<b>Preço especial:</b> R$ {preco_final:.2f} 🤑"
+
+        # Informações adicionais
         info = ""
         if sales > 0:
             info += f"📦 {sales} vendidos"
         if stars > 0:
             info += f" | ⭐ {stars:.1f}" if info else f"⭐ {stars:.1f}"
 
-        emojis = ["🔥", "🎉", "⚡", "💥", "🚀", "🏆", "💎", "😱"]
-        emoji = random.choice(emojis)
-
         caption = f"""
 {ai_text}
 
 <b>{name}</b>
+{desconto_texto}
 
-{emoji} <b>{discount}% DE DESCONTO!</b>
-
-De R$ ~{original_price:.2f}~
-Por R$ <b>*{final_price:.2f}*</b> 🤑
+{linha_preco}
 
 {info}
 
@@ -204,23 +251,23 @@ Compre aqui 🛍️👇
         return caption
 
     def run(self):
-        logging.info("🚀 Buscando produtos novos...")
-        # Escolhe uma categoria aleatória diferente a cada execução (rodízio)
+        logging.info("🚀 Iniciando busca de produtos (tendências Shopee 2026)...")
+        # Rotação de categoria com base no timestamp
         idx = int(time.time()) % len(CATEGORIAS)
         keyword = CATEGORIAS[idx]
         logging.info(f"Categoria selecionada: {keyword}")
 
         products = self.fetch_products(keyword)
         if not products:
-            logging.warning("Nenhum produto encontrado.")
+            logging.warning("Nenhum produto encontrado para esta categoria.")
             return
 
-        # Filtra os que já foram enviados hoje
+        # Filtra produtos já enviados hoje
         new_products = [p for p in products if str(p.get('itemId')) not in self.sent_ids]
         logging.info(f"Produtos novos: {len(new_products)} de {len(products)}")
 
         if not new_products:
-            logging.info("Todos os produtos já foram enviados hoje. Execução encerrada.")
+            logging.info("Todos os produtos já foram enviados hoje. Encerrando.")
             return
 
         # Limita ao máximo configurado
@@ -229,7 +276,7 @@ Compre aqui 🛍️👇
             try:
                 prod_id = prod['itemId']
                 name = prod['productName']
-                logging.info(f"Processando {i}/{len(to_send)}: {name[:40]}...")
+                logging.info(f"Processando {i}/{len(to_send)}: {name[:50]}...")
                 ai_msg = self.generate_message_gemini(name)
                 caption = self.format_caption(prod, ai_msg)
                 image = prod.get('imageUrl')
@@ -237,7 +284,7 @@ Compre aqui 🛍️👇
                     self.mark_sent(prod_id)
                 else:
                     logging.error(f"Falha ao enviar produto {i}")
-                time.sleep(8)  # Evita 429
+                time.sleep(DELAY_BETWEEN_PRODUCTS)
             except Exception as e:
                 logging.error(f"Erro no produto {i}: {e}")
 
