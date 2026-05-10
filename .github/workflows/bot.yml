@@ -2,22 +2,22 @@ name: Bot Shopee Telegram
 
 on:
   schedule:
-    - cron: '0 12 * * *'   # 09:00 Brasília
-    - cron: '0 13 * * *'   # 10:00 Brasília
-    - cron: '0 14 * * *'   # 11:00 Brasília
-    - cron: '0 15 * * *'   # 12:00 Brasília
-    - cron: '0 16 * * *'   # 13:00 Brasília
-    - cron: '41 17 * * *'  # 14:41 Brasília
-    - cron: '0 18 * * *'   # 15:00 Brasília
-    - cron: '57 19 * * *'  # 16:57 Brasília
-    - cron: '13 20 * * *'  # 17:13 Brasília
-    - cron: '0 21 * * *'   # 18:00 Brasília
-    - cron: '0 22 * * *'   # 19:00 Brasília
-    - cron: '0 23 * * *'   # 20:00 Brasília
-    - cron: '0 0 * * *'    # 21:00 Brasília (meia-noite UTC)
-    - cron: '0 1 * * *'    # 22:00 Brasília
-    - cron: '0 2 * * *'    # 23:00 Brasília
-    - cron: '59 4 * * *'   # 01:59 Brasília
+    - cron: '0 9 * * *'   # 06:00 Brasília
+    - cron: '0 10 * * *'  # 07:00
+    - cron: '0 11 * * *'  # 08:00
+    - cron: '0 12 * * *'  # 09:00
+    - cron: '0 13 * * *'  # 10:00
+    - cron: '0 14 * * *'  # 11:00
+    - cron: '0 15 * * *'  # 12:00
+    - cron: '0 16 * * *'  # 13:00
+    - cron: '0 17 * * *'  # 14:00
+    - cron: '0 18 * * *'  # 15:00
+    - cron: '0 19 * * *'  # 16:00
+    - cron: '0 20 * * *'  # 17:00
+    - cron: '0 21 * * *'  # 18:00
+    - cron: '0 22 * * *'  # 19:00
+    - cron: '0 23 * * *'  # 20:00
+    - cron: '0 0 * * *'   # 21:00
   workflow_dispatch:
 
 jobs:
